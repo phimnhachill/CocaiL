@@ -3,6 +3,7 @@ import json
 import glob
 import subprocess
 import requests
+import feedparser  # Đã bổ sung thư viện bắt buộc này
 from google import genai
 
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
@@ -35,7 +36,7 @@ def save_history(history):
         json.dump(history, f, ensure_ascii=False, indent=2)
 
 def extract_korean_subtitles(video_url, video_id):
-    """Tải toàn bộ phụ đề lời thoại tiếng Hàn của video"""
+    """Tải toàn bộ phụ đề lời thoại tiếng Hàn của video để phân tích chính xác"""
     sub_prefix = f"/tmp/meta_sub_{video_id}"
     cmd = [
         "yt-dlp",
@@ -61,14 +62,13 @@ def extract_korean_subtitles(video_url, video_id):
         except Exception as e:
             print(f"Lỗi đọc file phụ đề: {e}")
 
-    # Xóa file tạm
     for f in sub_files:
         try:
             os.remove(f)
         except Exception:
             pass
 
-    return text_content[:20000]
+    return text_content[:25000]
 
 def analyze_meta_with_gemini(channel_name, title, description, transcript):
     client = genai.Client(api_key=GEMINI_KEY)
@@ -84,8 +84,8 @@ def analyze_meta_with_gemini(channel_name, title, description, transcript):
     NHIỆM VỤ PHÂN TÍCH:
     1. 🎯 **Chủ Đề & Dịch Tiêu Đề**: Dịch tiêu đề sang tiếng Việt chuẩn thuật ngữ FC Online.
     2. ⚙️ **Chi Tiết Gameplay (BUFF / NERF)**:
-       - Các cơ chế sút bóng (ZD, D chìm), chuyền bóng, tạt cánh, rê dắt thay đổi thế nào?
-       - Trọng tài, AI phòng ngự, thủ môn được chỉnh sửa ra sao?
+       - Trích xuất từ lời thoại/mô tả xem cơ chế sút bóng (ZD, D chìm), chuyền bóng, tạt cánh, rê dắt thay đổi thế nào?
+       - Trọng tài, AI phòng ngự, thủ môn được chỉnh sửa ra sao? (Tuyệt đối không tự bịa nếu không được nhắc đến).
     3. 🃏 **Mùa Thẻ Mới / Sự Kiện Nexon**:
        - Có công bố mùa thẻ mới, cầu thủ mới hay lịch bảo trì không?
     4. 💡 **Lời Khuyên Chiến Thuật Cho Server Việt Nam**:
@@ -110,7 +110,7 @@ def send_discord(channel_name, video_title, video_url, summary):
         "description": summary[:4000],
         "color": 3447003,
         "footer": {
-            "text": "FC Online KR Intelligence Radar • Tự động bóc tách lời thoại tiếng Hàn"
+            "text": "FC Online KR Intelligence Radar • Tự động bóc tách từ tiếng Hàn"
         }
     }
     requests.post(DISCORD_WEBHOOK, json={"embeds": [embed]})
@@ -134,18 +134,14 @@ def main():
         if video_id not in history:
             print(f"Phát hiện video mới từ {ch['name']}: {video_title}")
             try:
-                # 1. Trích xuất phụ đề tiếng Hàn
                 print("-> Đang kéo phụ đề tiếng Hàn...")
                 transcript = extract_korean_subtitles(video_url, video_id)
                 if transcript:
-                    print(f"-> Đã lấy thành công {len(transcript)} ký tự lời thoại.")
+                    print(f"-> Đã lấy thành công lời thoại.")
                 else:
                     print("-> Video không có phụ đề, phân tích theo mô tả.")
 
-                # 2. Gửi AI phân tích
                 summary = analyze_meta_with_gemini(ch["name"], video_title, video_desc, transcript)
-                
-                # 3. Gửi Discord
                 send_discord(ch["name"], video_title, video_url, summary)
                 new_history.append(video_id)
             except Exception as e:
