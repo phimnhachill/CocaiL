@@ -1,6 +1,5 @@
 import os
 import json
-import glob
 import subprocess
 from datetime import datetime
 import requests
@@ -11,10 +10,20 @@ DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_GACHA")
 HISTORY_FILE = "database/stream_history.json"
 WEEKLY_FILE = "database/current_week.json"
 
+# Chuẩn hóa link chính xác 100% của 3 kênh YouTuber Việt Nam
 CHANNELS = [
-    {"name": "Phúc ZOLA", "url": "https://www.youtube.com/@PhucZOLA/videos"},
-    {"name": "Vumino", "url": "https://www.youtube.com/@vumino/videos"},
-    {"name": "Học Sinh Mới", "url": "https://www.youtube.com/@hocsinhmoi/videos"}
+    {
+        "name": "Phúc ZOLA",
+        "url": "https://www.youtube.com/@phuc25zola/videos"
+    },
+    {
+        "name": "Vumino",
+        "url": "https://www.youtube.com/@vumino9620/videos"
+    },
+    {
+        "name": "Học Sinh Mới",
+        "url": "https://www.youtube.com/@H%E1%BB%8DcSinhM%E1%BB%9Bi/videos"
+    }
 ]
 
 def load_json(filepath):
@@ -32,11 +41,13 @@ def save_json(filepath, data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 def get_channel_videos(channel_url):
+    """Lấy video mới nhất, giữ nguyên tiêu đề tiếng Việt gốc"""
     cmd = [
         "yt-dlp",
         "--flat-playlist",
-        "-I", "1:3",
-        "--print", "%(id)s:::%(title)s:::%(webpage_url)s",
+        "-I", "1:2",
+        "--extractor-args", "youtube:lang=vi",
+        "--print", "%(id)s:::%(title)s:::%(webpage_url)s:::%(description)s",
         channel_url
     ]
     try:
@@ -44,95 +55,60 @@ def get_channel_videos(channel_url):
         videos = []
         for line in res.stdout.strip().split("\n"):
             if ":::" in line:
-                vid, title, url = line.split(":::", 2)
-                videos.append({"id": vid.strip(), "title": title.strip(), "url": url.strip()})
+                parts = line.split(":::", 3)
+                videos.append({
+                    "id": parts[0].strip(),
+                    "title": parts[1].strip(),
+                    "url": parts[2].strip(),
+                    "desc": parts[3].strip() if len(parts) > 3 else ""
+                })
         return videos
     except Exception as e:
         print(f"Lỗi lấy video từ {channel_url}: {e}")
         return []
 
-def extract_content(video_url, video_id):
-    sub_prefix = f"/tmp/sub_{video_id}"
-    cmd = [
-        "yt-dlp",
-        "--write-auto-sub",
-        "--sub-lang", "vi,en",
-        "--skip-download",
-        "--output", sub_prefix,
-        video_url
-    ]
-    subprocess.run(cmd, capture_output=True, text=True)
-
-    text_content = ""
-    sub_files = glob.glob(f"{sub_prefix}*.vtt")
-    if sub_files:
-        try:
-            with open(sub_files[0], "r", encoding="utf-8") as f:
-                lines = [line.strip() for line in f if not line.startswith(("WEBVTT", "-->", "<")) and line.strip()]
-                text_content = " ".join(lines[-4000:])
-        except Exception:
-            pass
-
-    return text_content[:15000]
-
-def analyze_with_gemini(creator, title, content):
+def analyze_with_gemini(creator, title, description):
     client = genai.Client(api_key=GEMINI_KEY)
+    
+    # Prompt chặt chẽ: Cấm tuyệt đối bịa đặt số liệu
     prompt = f"""
-    Bạn là chuyên gia trinh sát tỷ lệ đập thẻ và mở thẻ game FC Online Việt Nam.
-    Dưới đây là thông tin buổi stream/video từ YouTuber {creator}:
-    - Tiêu đề: {title}
-    - Dữ liệu âm thanh/hội thoại bóc tách:
-    {content if content else "(Không có transcript chi tiết, hãy phân tích dựa trên tiêu đề và hành vi đặc trưng)"}
+    Bạn là hệ thống trinh sát FC Online Việt Nam chuyên ghi nhận lịch sử đập thẻ/mở gói.
+    Dữ liệu thu thập từ video của streamer {creator}:
+    - Tiêu đề video: {title}
+    - Nội dung mô tả/thông tin đính kèm:
+    {description[:2500] if description else "Không có mô tả chi tiết."}
 
-    Hãy bóc tách thành bản báo cáo tình báo ngắn gọn theo định dạng:
-    1. 🎰 **Tỷ Lệ Mở Gói / Gacha**: (Các gói được mở, tỷ lệ nhả phôi, nổ bom tấn hay xịt)
-    2. 🔨 **Bóc Mẽ Bài Đập Thẻ**: (Mốc phôi +5, +7, +8; có dùng phôi mồi không; mồi xịt mấy cây; tỷ lệ thành công)
-    3. 💰 **Thiệt Hại & Kinh Tế**: (Tổng kết buổi stream Lời hay Lỗ bao nhiêu BP/tiền mặt)
-    4. ⚠️ **Cảnh Báo Cho Người Chơi**: (Đánh giá game hôm nay có đang nhả đồ không, có nên nạp/đập lúc này không)
+    QUY TẮC BẮT BUỘC (TUÂN THỦ 100%):
+    1. TUYỆT ĐỐI KHÔNG TỰ BỊA ĐẶT số lượng phôi mồi, số BP lời/lỗ hoặc tỷ lệ % nếu trong tiêu đề và mô tả không ghi rõ con số đó.
+    2. Nếu trong nội dung có số liệu cụ thể (ví dụ: mở bao nhiêu gói, nổ con gì, đập mốc + mấy lên hay xịt), hãy liệt kê chính xác.
+    3. Nếu KHÔNG CÓ số liệu chi tiết, ghi rõ: "⚠️ Streamer không ghi kèm nhật ký số liệu cụ thể cho buổi này."
+
+    Xuất báo cáo theo cấu trúc sau:
+    🎯 **Kèo Trọng Điểm**: (Tên các thẻ cầu thủ, mốc cấp thẻ +X được nhắc đến ở tiêu đề/mô tả)
+    📊 **Dữ Liệu Bóc Tách Được**: (Chỉ ghi số liệu thực tế được xác nhận, không suy đoán)
+    📌 **Ghi Chú Trinh Sát**: (Tóm tắt ngắn gọn nội dung video thể hiện)
     """
 
-    candidates = [
-        "gemini-3.8-flash",
-        "gemini-3.5-flash-lite",
-        "gemini-3.5-flash",
-        "gemini-3.7-flash"
-    ]
-    
-    try:
-        available = [m.name.replace("models/", "") for m in client.models.list()]
-        for c in candidates:
-            if c in available:
-                res = client.models.generate_content(model=c, contents=prompt)
-                print(f"-> Phân tích thành công bằng model: {c}")
-                return res.text
-    except Exception:
-        pass
-
+    candidates = ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.5-flash"]
     for c in candidates:
         try:
             res = client.models.generate_content(model=c, contents=prompt)
-            print(f"-> Phân tích thành công bằng model: {c}")
             return res.text
         except Exception:
             continue
-
-    raise Exception("Không thể gọi Gemini API.")
+    raise Exception("Lỗi gọi Gemini API")
 
 def send_discord(creator, title, url, report):
     embed = {
-        "title": f"🔥 [TRINH SÁT GACHA & ĐẬP THẺ] {creator}",
+        "title": f"🔥 [{creator}] {title}",
         "url": url,
-        "description": report[:4000],
+        "description": report[:3900],
         "color": 15158332,
         "footer": {
-            "text": "FC Online VN Intelligence • Tự động trinh sát bởi Gemini"
+            "text": "FC Online VN Radar • Trinh sát thực tế"
         }
     }
-    res = requests.post(DISCORD_WEBHOOK, json={"embeds": [embed]})
-    if res.status_code == 204:
-        print(f"-> Đã gửi thành công lên Discord: {title}")
-    else:
-        print(f"-> Lỗi gửi Discord: {res.status_code} - {res.text}")
+    requests.post(DISCORD_WEBHOOK, json={"embeds": [embed]})
 
 def main():
     history = load_json(HISTORY_FILE)
@@ -140,15 +116,14 @@ def main():
     new_history = list(history)
 
     for ch in CHANNELS:
-        print(f"Đang quét kênh: {ch['name']}...")
+        print(f"Quét kênh: {ch['name']}...")
         videos = get_channel_videos(ch["url"])
 
         for vid in videos:
             if vid["id"] not in history:
                 print(f"Phát hiện video mới từ {ch['name']}: {vid['title']}")
-                content = extract_content(vid["url"], vid["id"])
                 try:
-                    report = analyze_with_gemini(ch["name"], vid["title"], content)
+                    report = analyze_with_gemini(ch["name"], vid["title"], vid["desc"])
                     send_discord(ch["name"], vid["title"], vid["url"], report)
 
                     new_history.append(vid["id"])
@@ -161,7 +136,7 @@ def main():
                         "report": report
                     })
                 except Exception as e:
-                    print(f"Lỗi phân tích video {vid['id']}: {e}")
+                    print(f"Lỗi: {e}")
 
     save_json(HISTORY_FILE, new_history)
     save_json(WEEKLY_FILE, weekly_data)
