@@ -1,6 +1,7 @@
 import os
 import json
-import feedparser
+import glob
+import subprocess
 import requests
 from google import genai
 
@@ -33,74 +34,93 @@ def save_history(history):
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(history, f, ensure_ascii=False, indent=2)
 
-def summarize_with_gemini(title, description):
-    client = genai.Client(api_key=GEMINI_KEY)
-    prompt = f"""
-    Bạn là chuyên gia phân tích meta FC Online.
-    Dưới đây là thông tin video mới từ máy chủ Nexon Hàn Quốc:
-    - Tiêu đề: {title}
-    - Mô tả: {description}
-
-    Nhiệm vụ:
-    1. Dịch tiêu đề sang tiếng Việt chuẩn thuật ngữ game FC Online.
-    2. Tóm tắt nội dung chính trong 3-4 gạch đầu dòng (thay đổi gameplay, sút ZD, tạt bóng, mùa thẻ mới, hoặc lịch bảo trì).
-    3. Đưa ra 1 lời khuyên ngắn gọn cho game thủ Việt Nam.
-
-    Xuất định dạng Markdown ngắn gọn, súc tích.
-    """
-    
-    # Ưu tiên các model Flash thế hệ mới đang mở gói Free
-    candidates = [
-        "gemini-3.8-flash",
-        "gemini-3.5-flash-lite",
-        "gemini-3.5-flash",
-        "gemini-3.7-flash"
+def extract_korean_subtitles(video_url, video_id):
+    """Tải toàn bộ phụ đề lời thoại tiếng Hàn của video"""
+    sub_prefix = f"/tmp/meta_sub_{video_id}"
+    cmd = [
+        "yt-dlp",
+        "--write-auto-sub",
+        "--sub-lang", "ko",
+        "--skip-download",
+        "--output", sub_prefix,
+        video_url
     ]
-    
-    # Tự động đối chiếu với danh sách model thực tế được cấp phép trên key
-    try:
-        available = [m.name.replace("models/", "") for m in client.models.list()]
-        for c in candidates:
-            if c in available:
-                res = client.models.generate_content(model=c, contents=prompt)
-                print(f"-> Đã phân tích thành công bằng model: {c}")
-                return res.text
-    except Exception as e:
-        print(f"Lỗi kiểm tra danh sách: {e}")
+    subprocess.run(cmd, capture_output=True, text=True)
 
-    # Chạy dự phòng tuần tự
-    for model_name in candidates:
+    text_content = ""
+    sub_files = glob.glob(f"{sub_prefix}*.vtt")
+    if sub_files:
         try:
-            res = client.models.generate_content(model=model_name, contents=prompt)
-            print(f"-> Đã phân tích thành công bằng model: {model_name}")
+            with open(sub_files[0], "r", encoding="utf-8") as f:
+                lines = []
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith(("WEBVTT", "-->", "<")) and line not in lines[-3:]:
+                        lines.append(line)
+                text_content = " ".join(lines)
+        except Exception as e:
+            print(f"Lỗi đọc file phụ đề: {e}")
+
+    # Xóa file tạm
+    for f in sub_files:
+        try:
+            os.remove(f)
+        except Exception:
+            pass
+
+    return text_content[:20000]
+
+def analyze_meta_with_gemini(channel_name, title, description, transcript):
+    client = genai.Client(api_key=GEMINI_KEY)
+    
+    prompt = f"""
+    Bạn là chuyên gia phân tích meta, gameplay và thị trường chuyển nhượng FC Online hàng đầu.
+    Dưới đây là dữ liệu video cập nhật mới từ máy chủ Nexon Hàn Quốc ({channel_name}):
+    - Tiêu đề gốc: {title}
+    - Mô tả: {description}
+    - Lời thoại bóc tách từ video (Tiếng Hàn):
+    {transcript if transcript else "(Không có phụ đề chi tiết, hãy phân tích dựa trên văn bản tiêu đề và mô tả)"}
+
+    NHIỆM VỤ PHÂN TÍCH:
+    1. 🎯 **Chủ Đề & Dịch Tiêu Đề**: Dịch tiêu đề sang tiếng Việt chuẩn thuật ngữ FC Online.
+    2. ⚙️ **Chi Tiết Gameplay (BUFF / NERF)**:
+       - Các cơ chế sút bóng (ZD, D chìm), chuyền bóng, tạt cánh, rê dắt thay đổi thế nào?
+       - Trọng tài, AI phòng ngự, thủ môn được chỉnh sửa ra sao?
+    3. 🃏 **Mùa Thẻ Mới / Sự Kiện Nexon**:
+       - Có công bố mùa thẻ mới, cầu thủ mới hay lịch bảo trì không?
+    4. 💡 **Lời Khuyên Chiến Thuật Cho Server Việt Nam**:
+       - Game thủ Việt Nam nên chuẩn bị phôi, đổi sơ đồ hay chuẩn bị đón đầu meta này như thế nào?
+
+    Yêu cầu: Viết súc tích, đi thẳng vào số liệu và thuật ngữ in-game chuẩn xác.
+    """
+
+    candidates = ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.5-flash"]
+    for c in candidates:
+        try:
+            res = client.models.generate_content(model=c, contents=prompt)
             return res.text
         except Exception:
             continue
-            
-    raise Exception("Không tìm thấy model Flash nào khả dụng trên Free Tier.")
+    raise Exception("Không gọi được Gemini API")
 
 def send_discord(channel_name, video_title, video_url, summary):
     embed = {
-        "title": f"🚨 [TIN META HÀN] {channel_name}",
+        "title": f"🚨 [TÌNH BÁO META HÀN] {channel_name}",
         "url": video_url,
-        "description": summary,
+        "description": summary[:4000],
         "color": 3447003,
         "footer": {
-            "text": "FC Online KR Intelligence Bot • Phân tích bởi Gemini"
+            "text": "FC Online KR Intelligence Radar • Tự động bóc tách lời thoại tiếng Hàn"
         }
     }
-    payload = {"embeds": [embed]}
-    res = requests.post(DISCORD_WEBHOOK, json=payload)
-    if res.status_code == 204:
-        print(f"-> Đã gửi thành công lên Discord: {video_title}")
-    else:
-        print(f"-> Lỗi gửi Discord: {res.status_code} - {res.text}")
+    requests.post(DISCORD_WEBHOOK, json={"embeds": [embed]})
 
 def main():
     history = load_history()
     new_history = list(history)
 
     for ch in CHANNELS:
+        print(f"Kiểm tra kênh: {ch['name']}...")
         feed = feedparser.parse(ch["url"])
         if not feed.entries:
             continue
@@ -114,7 +134,18 @@ def main():
         if video_id not in history:
             print(f"Phát hiện video mới từ {ch['name']}: {video_title}")
             try:
-                summary = summarize_with_gemini(video_title, video_desc)
+                # 1. Trích xuất phụ đề tiếng Hàn
+                print("-> Đang kéo phụ đề tiếng Hàn...")
+                transcript = extract_korean_subtitles(video_url, video_id)
+                if transcript:
+                    print(f"-> Đã lấy thành công {len(transcript)} ký tự lời thoại.")
+                else:
+                    print("-> Video không có phụ đề, phân tích theo mô tả.")
+
+                # 2. Gửi AI phân tích
+                summary = analyze_meta_with_gemini(ch["name"], video_title, video_desc, transcript)
+                
+                # 3. Gửi Discord
                 send_discord(ch["name"], video_title, video_url, summary)
                 new_history.append(video_id)
             except Exception as e:
