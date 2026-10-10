@@ -31,6 +31,7 @@ def load_history():
     return []
 
 def save_history(history):
+    os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(history, f, ensure_ascii=False, indent=2)
 
@@ -49,8 +50,10 @@ def summarize_with_gemini(title, description):
 
     Xuất định dạng Markdown ngắn gọn, súc tích.
     """
+    
+    # Sử dụng model Gemini Pro mới nhất
     response = client.models.generate_content(
-        model="gemini-2.5-pro",
+        model="gemini-3.1-pro-preview",
         contents=prompt
     )
     return response.text
@@ -60,13 +63,17 @@ def send_discord(channel_name, video_title, video_url, summary):
         "title": f"🚨 [TIN META HÀN] {channel_name}",
         "url": video_url,
         "description": summary,
-        "color": 3447003, # Màu xanh radar
+        "color": 3447003,  # Màu xanh radar
         "footer": {
-            "text": "FC Online KR Intelligence Bot • Tự động phân tích bởi Gemini Pro"
+            "text": "FC Online KR Intelligence Bot • Phân tích bởi Gemini Pro"
         }
     }
     payload = {"embeds": [embed]}
-    requests.post(DISCORD_WEBHOOK, json=payload)
+    res = requests.post(DISCORD_WEBHOOK, json=payload)
+    if res.status_code == 204:
+        print(f"-> Đã gửi thành công lên Discord: {video_title}")
+    else:
+        print(f"-> Lỗi gửi Discord: {res.status_code} - {res.text}")
 
 def main():
     history = load_history()
@@ -83,7 +90,7 @@ def main():
         video_title = latest_entry.title
         video_desc = getattr(latest_entry, "summary", "")
 
-        # Kiểm tra xem video này đã gửi chưa
+        # Kiểm tra xem video này đã xử lý chưa
         if video_id not in history:
             print(f"Phát hiện video mới từ {ch['name']}: {video_title}")
             try:
