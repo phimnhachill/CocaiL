@@ -4,12 +4,10 @@ import feedparser
 import requests
 from google import genai
 
-# Lấy các biến bí mật từ môi trường GitHub Secrets
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_META")
 HISTORY_FILE = "database/meta_history.json"
 
-# Danh sách kênh Meta Hàn Quốc
 CHANNELS = [
     {
         "name": "Nexon FC Online Official",
@@ -51,21 +49,37 @@ def summarize_with_gemini(title, description):
     Xuất định dạng Markdown ngắn gọn, súc tích.
     """
     
-    # Sử dụng model Gemini Pro mới nhất
-    response = client.models.generate_content(
-        model="gemini-3.1-pro-preview",
-        contents=prompt
-    )
-    return response.text
+    # Danh sách các model Flash miễn phí (tự động chuyển nếu model trước bận/hết hạn)
+    candidate_models = [
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash"
+    ]
+    
+    last_error = None
+    for model_name in candidate_models:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt
+            )
+            print(f"-> Phân tích thành công bằng model: {model_name}")
+            return response.text
+        except Exception as err:
+            last_error = err
+            print(f"Thử {model_name} không thành công, chuyển sang model kế tiếp...")
+            continue
+            
+    raise last_error
 
 def send_discord(channel_name, video_title, video_url, summary):
     embed = {
         "title": f"🚨 [TIN META HÀN] {channel_name}",
         "url": video_url,
         "description": summary,
-        "color": 3447003,  # Màu xanh radar
+        "color": 3447003,
         "footer": {
-            "text": "FC Online KR Intelligence Bot • Phân tích bởi Gemini Pro"
+            "text": "FC Online KR Intelligence Bot • Tự động phân tích bởi Gemini"
         }
     }
     payload = {"embeds": [embed]}
@@ -90,7 +104,6 @@ def main():
         video_title = latest_entry.title
         video_desc = getattr(latest_entry, "summary", "")
 
-        # Kiểm tra xem video này đã xử lý chưa
         if video_id not in history:
             print(f"Phát hiện video mới từ {ch['name']}: {video_title}")
             try:
