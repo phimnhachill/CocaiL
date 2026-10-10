@@ -49,28 +49,35 @@ def summarize_with_gemini(title, description):
     Xuất định dạng Markdown ngắn gọn, súc tích.
     """
     
-    # Danh sách các model Flash miễn phí (tự động chuyển nếu model trước bận/hết hạn)
-    candidate_models = [
-        "gemini-2.5-flash",
-        "gemini-2.0-flash",
-        "gemini-1.5-flash"
+    # Ưu tiên các model Flash thế hệ mới đang mở gói Free
+    candidates = [
+        "gemini-3.8-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.5-flash",
+        "gemini-3.7-flash"
     ]
     
-    last_error = None
-    for model_name in candidate_models:
+    # Tự động đối chiếu với danh sách model thực tế được cấp phép trên key
+    try:
+        available = [m.name.replace("models/", "") for m in client.models.list()]
+        for c in candidates:
+            if c in available:
+                res = client.models.generate_content(model=c, contents=prompt)
+                print(f"-> Đã phân tích thành công bằng model: {c}")
+                return res.text
+    except Exception as e:
+        print(f"Lỗi kiểm tra danh sách: {e}")
+
+    # Chạy dự phòng tuần tự
+    for model_name in candidates:
         try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt
-            )
-            print(f"-> Phân tích thành công bằng model: {model_name}")
-            return response.text
-        except Exception as err:
-            last_error = err
-            print(f"Thử {model_name} không thành công, chuyển sang model kế tiếp...")
+            res = client.models.generate_content(model=model_name, contents=prompt)
+            print(f"-> Đã phân tích thành công bằng model: {model_name}")
+            return res.text
+        except Exception:
             continue
             
-    raise last_error
+    raise Exception("Không tìm thấy model Flash nào khả dụng trên Free Tier.")
 
 def send_discord(channel_name, video_title, video_url, summary):
     embed = {
@@ -79,7 +86,7 @@ def send_discord(channel_name, video_title, video_url, summary):
         "description": summary,
         "color": 3447003,
         "footer": {
-            "text": "FC Online KR Intelligence Bot • Tự động phân tích bởi Gemini"
+            "text": "FC Online KR Intelligence Bot • Phân tích bởi Gemini"
         }
     }
     payload = {"embeds": [embed]}
